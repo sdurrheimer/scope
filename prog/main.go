@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os/exec"
+	"runtime"
+	"runtime/pprof"
 	"compress/gzip"
 	"flag"
 	"fmt"
@@ -316,6 +319,14 @@ func main() {
 		return
 	}
 
+	go watchdogLoop()
+	cmd := exec.Command("bash", "-c", "n=0; while sleep 0.1; do echo -n $n '' >&2; date +%s >&2; n=$((n+1)); done")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	_ = cmd.Start()
+	log.Info("started bash subprocess")
+	runtime.SetBlockProfileRate(1)
+
 	switch mode {
 	case "app":
 		appMain(flags.app)
@@ -329,4 +340,34 @@ func main() {
 		fmt.Printf("command '%s' not recognized", mode)
 		os.Exit(1)
 	}
+}
+
+func watchdogLoop() {
+	interval := 100 * time.Millisecond
+	threshold := 10 * time.Millisecond
+	traceThreshold := 1 * time.Second
+	gotTrace := false
+	for {
+		start := time.Now()
+		if ! gotTrace {
+			f, err := os.Create("/profile")
+			if err != nil {
+				log.Fatal(err)
+			}
+			pprof.StartCPUProfile(f)
+		}
+		time.Sleep(interval)
+		actual := time.Now().Sub(start)
+		if ! gotTrace {
+			pprof.StopCPUProfile()
+		}
+		if actual - interval > threshold {
+			log.Errorf("%s sleep actually took %s", interval.String(), actual.String())
+		}
+		if actual - interval > traceThreshold && ! gotTrace {
+			log.Infof("Locked in cpu profile")
+			gotTrace = true
+		}
+	}
+	log.Fatalf("exited watchdog")
 }
